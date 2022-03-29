@@ -1,4 +1,4 @@
----- MODULE 03b_Canisters ----
+---- MODULE 03a_Canisters ----
 EXTENDS TLC, Sequences, Integers, FiniteSets
 
 INITIAL_USER_BALANCE == 2
@@ -34,11 +34,15 @@ VARIABLE
 vars == << balance, cached_stake, requests, responses, args, pc >>
 
 Init ==
-    /\ balance = [ x \in USER_ACCOUNTS |-> INITIAL_USER_BALANCE ] @@ [ x \in NEURON_ACCOUNTS |-> 0]
+    \* (f @@ g)[x] = IF x \in DOMAIN(f) THEN f[x] ELSE g[x]
+    /\ balance = [ x \in USER_ACCOUNTS |-> INITIAL_USER_BALANCE ] 
+                        @@ [ x \in NEURON_ACCOUNTS |-> 0]
     /\ cached_stake = [ x \in NEURON_ACCOUNTS |-> 0 ]
+    \* Empty sequence
     /\ requests = <<>>
     /\ responses = {}
-    /\ pc = [ cp \in CLAIM_TIDS |-> CLAIM_START ] @@ [ dp \in DISBURSE_TIDS |-> DISBURSE_START ]
+    /\ pc = [ cp \in CLAIM_TIDS |-> CLAIM_START ] 
+            @@ [ dp \in DISBURSE_TIDS |-> DISBURSE_START ]
     /\ args = [ p \in CLAIM_TIDS \union DISBURSE_TIDS |-> {} ]
 
 Query(tid, account) == [ type |-> QUERY_T, tid |-> tid, account |-> account ]
@@ -46,6 +50,13 @@ Transfer(tid, from, to, amount) == [ type |-> TRANSFER_T, tid |-> tid, from |-> 
 Is_Query(msg) == msg.type = QUERY_T
 Is_Transfer(msg) == msg.type = TRANSFER_T
 Response(type, tid, value) == [ type |-> type, tid |-> tid, value |-> value ]
+
+Claim_Neuron_Start(tid, acc_id) ==
+    /\ pc[tid] = CLAIM_START
+    /\ requests' = Append(requests, Query(tid, acc_id))
+    /\ pc' = [ pc EXCEPT ![tid] = CLAIM_WAIT ]
+    /\ args' = [ args EXCEPT ![tid] = acc_id ]
+    /\ UNCHANGED << balance, responses, cached_stake >>
 
 Ledger_Query ==
     /\ requests # <<>>
@@ -57,36 +68,6 @@ Ledger_Query ==
             {Response(QUERY_T, req.tid, balance[req.account])}
         /\ requests' = Tail(requests)
         /\ UNCHANGED << balance, cached_stake, pc, args >>
-
-Ledger_Neuron_Transfer ==
-    /\ requests # <<>>
-    /\ LET
-        req == Head(requests)
-       IN 
-        /\ Is_Transfer(req)
-        /\ req.amount <= balance[req.from]
-        /\ balance' = [ balance EXCEPT
-            ![req.from] = @ - req.amount,
-            ![req.to] = @ + req.amount]
-        /\ responses' = responses \union 
-            {Response(TRANSFER_T, req.tid, {})}
-        /\ requests' = Tail(requests)
-        /\ UNCHANGED << cached_stake, pc, args >>
-
-Ledger_User_Transfer(user_acc, neuron_acc) ==
-  \E amt \in 1..balance[user_acc]:
-    /\ balance' = [ balance EXCEPT
-            ![user_acc] = @ - amt,
-            ![neuron_acc] = @ + amt
-        ]
-    /\ UNCHANGED << cached_stake, requests, responses, pc, args >>
-
-Claim_Neuron_Start(tid, neuron) ==
-    /\ pc[tid] = CLAIM_START
-    /\ requests' = Append(requests, Query(tid, neuron))
-    /\ pc' = [ pc EXCEPT ![tid] = CLAIM_WAIT ]
-    /\ args' = [ args EXCEPT ![tid] = neuron ]
-    /\ UNCHANGED << balance, responses, cached_stake >>
 
 Claim_Neuron_Wait(tid) ==
   \E response \in responses:
@@ -100,23 +81,45 @@ Claim_Neuron_Wait(tid) ==
 
 Disburse_Neuron_Start(tid, neuron, to) ==
     /\ pc[tid] = DISBURSE_START
-    /\ cached_stake' = [ cached_stake EXCEPT ![neuron] = 0 ]
     /\ requests' = Append(
         requests, 
         Transfer(tid, neuron, to, cached_stake[neuron])
        )
     /\ pc' = [ pc EXCEPT ![tid] = DISBURSE_WAIT ]
     /\ args' = [ args EXCEPT ![tid] = neuron ]
-    /\ UNCHANGED << balance, responses >>
+    /\ UNCHANGED << balance, responses, cached_stake >>
+
+Ledger_Neuron_Transfer ==
+    /\ requests # <<>>
+    /\ LET
+        req == Head(requests)
+       IN 
+        /\ Is_Transfer(req)
+        /\ balance' = [ balance EXCEPT
+            ![req.from] = @ - req.amount,
+            ![req.to] = @ + req.amount]
+        /\ responses' = responses \union 
+            {Response(TRANSFER_T, req.tid, {})}
+        /\ requests' = Tail(requests)
+        /\ UNCHANGED << cached_stake, pc, args >>
 
 Disburse_Neuron_Wait(tid) ==
   \E response \in responses:
     /\ pc[tid] = DISBURSE_WAIT
     /\ Is_Transfer(response)
     /\ response.tid = tid
+    /\ cached_stake' = [ cached_stake EXCEPT ![args[tid]] = 0 ]
     /\ responses' = responses \ {response}
     /\ pc' = [ pc EXCEPT ![tid] = CLAIM_END ]
-    /\ UNCHANGED << balance, requests, args, cached_stake >>
+    /\ UNCHANGED << balance, requests, args >>
+
+Ledger_User_Transfer(user_acc, neuron_acc) ==
+  \E amt \in 1..balance[user_acc]:
+    /\ balance' = [ balance EXCEPT
+            ![user_acc] = @ - amt,
+            ![neuron_acc] = @ + amt
+        ]
+    /\ UNCHANGED << cached_stake, requests, responses, pc, args >>
 
 Next == \E ctid \in CLAIM_TIDS, 
   dtid \in DISBURSE_TIDS, 
@@ -148,7 +151,6 @@ Cached_Stake_Is_Bounded_By_Supply ==
 Supply_Is_Constant ==
     /\ Sum_F(balance, DOMAIN balance) = INITIAL_USER_BALANCE * Cardinality(USER_ACCOUNTS)
 
-Positive_Balances == \A acc \in ACCOUNTS: balance[acc] >= 0
-
+Balances_Non_Negative == \A acc \in ACCOUNTS: balance[acc] >= 0
 
 ====
